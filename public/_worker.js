@@ -1,5 +1,6 @@
 ﻿// public/_worker.js
-// UDF-compatible datafeed. Handles both path-based and query-based actions.
+// UDF-compatible datafeed. Handles path-based and query-based actions.
+// Supports server-side aggregation for intervals Yahoo doesn't provide natively.
 
 function toYahooSymbol(udfSymbol) {
   if (!udfSymbol) return 'AAPL';
@@ -10,13 +11,30 @@ function toYahooSymbol(udfSymbol) {
   return raw;
 }
 
+// Native Yahoo intervals mapped to their base (non-aggregated) resolution.
+// When we can't fetch the requested interval directly, we fetch the base
+// and aggregate client-side (in the worker).
+const NATIVE_INTERVALS = {
+  '1': '1m', '5': '5m', '15': '15m', '30': '30m',
+  '60': '1h', '240': '1d',
+  '1D': '1d', '1W': '1wk', '1M': '1mo',
+};
+
+// Intervals we synthesize by aggregating 1-minute bars.
+// key = UDF resolution string, value = number of 1m bars per output bar
+const AGGREGATED_INTERVALS = {
+  '2': 2,
+  '3': 3,
+  '4': 4,
+  '10': 10,
+  '45': 45,
+};
+
 function toYahooInterval(resolution) {
-  const map = {
-    '1': '1m', '3': '1m', '5': '5m', '15': '15m',
-    '30': '30m', '60': '1h', '240': '1d',
-    '1D': '1d', '1W': '1wk', '1M': '1mo',
-  };
-  return map[String(resolution)] || '1d';
+  const res = String(resolution);
+  if (NATIVE_INTERVALS[res]) return NATIVE_INTERVALS[res];
+  if (AGGREGATED_INTERVALS[res]) return '1m'; // fetch base, aggregate later
+  return '1d';
 }
 
 async function fetchYahooChart(symbol, interval, from, to) {
@@ -49,6 +67,53 @@ async function fetchYahooChart(symbol, interval, from, to) {
     v.push(volume[i] ?? 0);
   }
   return { t, o, h, l, c, v };
+}
+
+// Group bars of size `groupSize` seconds. Assumes bars are aligned to
+// groupSize boundaries (e.g., 3m bars at :00/:03/:06...).
+function aggregate(bars, groupSec) {
+  const { t, o, h, l, c, v } = bars;
+  if (t.length === 0) return bars;
+
+  const out = { t: [], o: [], h: [], l: [], c: [], v: [] };
+  let bucketTs = null;
+  let curO = 0, curH = -Infinity, curL = Infinity, curC = 0, curV = 0;
+
+  for (let i = 0; i < t.length; i++) {
+    const b = Math.floor(t[i] / groupSec) * groupSec;
+    if (bucketTs === null) bucketTs = b;
+
+    if (b !== bucketTs) {
+      // flush previous bucket
+      out.t.push(bucketTs);
+      out.o.push(curO);
+      out.h.push(curH);
+      out.l.push(curL);
+      out.c.push(curC);
+      out.v.push(curV);
+      // start new
+      bucketTs = b;
+      curO = o[i]; curH = h[i]; curL = l[i]; curC = c[i]; curV = v[i];
+    } else {
+      // merge into current
+      curH = Math.max(curH, h[i]);
+      curL = Math.min(curL, l[i]);
+      curC = c[i];
+      curV += v[i];
+    }
+  }
+
+  // flush last bucket
+  if (bucketTs !== null) {
+    out.t.push(bucketTs);
+    out.o.push(curO);
+    out.h.push(curH);
+    out.l.push(curL);
+    out.c.push(curC);
+    out.v.push(curV);
+  }
+
+  return out;
 }
 
 function jsonResponse(body, status = 200) {
@@ -100,7 +165,6 @@ export default {
     }
 
     const action = detectAction(url, pathname) || bodyParams.action;
-    console.log(`[UDF] pathname=${pathname} action=${action} method=${request.method}`);
 
     try {
       if (action === 'config') {
@@ -112,7 +176,9 @@ export default {
           supports_timescale_marks: false,
           supports_time: true,
           symbols_types: [],
-          supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'],
+          supported_resolutions: [
+            '1','2','3','4','5','10','15','30','45','60','240','1D','1W','1M'
+          ],
         });
       }
 
@@ -120,28 +186,22 @@ export default {
         const symbol = url.searchParams.get('symbol') || bodyParams.symbol || 'FX_IDC:USDJPY';
         const raw = symbol.includes(':') ? symbol.split(':')[1] : symbol;
         return jsonResponse({
-          name: raw,
-          ticker: symbol,
-          description: raw,
-          type: 'forex',
-          session: '24x7',
-          exchange: 'YAHOO',
-          listed_exchange: 'YAHOO',
-          timezone: 'Etc/UTC',
-          has_intraday: true,
-          has_daily: true,
-          has_weekly_and_monthly: true,
-          minmov: 1,
+          name: raw, ticker: symbol, description: raw, type: 'forex',
+          session: '24x7', exchange: 'YAHOO', listed_exchange: 'YAHOO',
+          timezone: 'Etc/UTC', has_intraday: true, has_daily: true,
+          has_weekly_and_monthly: true, minmov: 1,
           pricescale: raw.includes('JPY') ? 100 : 100000,
-          supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'],
+          supported_resolutions: [
+            '1','2','3','4','5','10','15','30','45','60','240','1D','1W','1M'
+          ],
         });
       }
 
       if (action === 'history') {
-        const symbol = url.searchParams.get('symbol') || bodyParams.symbol || 'FX_IDC:USDJPY';
-        const resolution = url.searchParams.get('resolution') || bodyParams.resolution || '1';
-        const fromReq = parseInt(url.searchParams.get('from') || bodyParams.from || '0', 10);
-        const toReq   = parseInt(url.searchParams.get('to')   || bodyParams.to   || '0', 10);
+        const symbol     = url.searchParams.get('symbol')     || bodyParams.symbol     || 'FX_IDC:USDJPY';
+        const resolution = String(url.searchParams.get('resolution') || bodyParams.resolution || '1');
+        const fromReq    = parseInt(url.searchParams.get('from') || bodyParams.from || '0', 10);
+        const toReq      = parseInt(url.searchParams.get('to')   || bodyParams.to   || '0', 10);
 
         const serverNow = Math.floor(Date.now() / 1000);
         const windowSec = Math.max(60, (toReq || serverNow) - (fromReq || 0));
@@ -149,16 +209,39 @@ export default {
         let safeFrom = safeTo - windowSec;
         if (safeFrom < 0) safeFrom = 0;
 
-        const { t, o, h, l, c, v } = await fetchYahooChart(
-          toYahooSymbol(symbol), toYahooInterval(resolution), safeFrom, safeTo
-        );
-        if (t.length === 0) return jsonResponse({ s: 'no_data' });
-        return jsonResponse({ s: 'ok', t, o, h, l, c, v });
+        // If we need to aggregate, over-fetch 1m bars covering the window
+        // plus a small buffer at the start so the first output bar is complete.
+        const groupSize = AGGREGATED_INTERVALS[resolution];
+        const fetchFrom = groupSize ? safeFrom - groupSize * 60 : safeFrom;
+
+        const ySymbol = toYahooSymbol(symbol);
+        const yInterval = toYahooInterval(resolution);
+
+        console.log(`[UDF] ${symbol} res=${resolution} -> yahoo=${yInterval}${groupSize ? ' agg=' + groupSize : ''} window=${safeFrom}-${safeTo}`);
+
+        const raw = await fetchYahooChart(ySymbol, yInterval, fetchFrom, safeTo);
+
+        const out = groupSize ? aggregate(raw, groupSize * 60) : raw;
+
+        // Trim any output bars before the requested from
+        if (out.t.length && out.t[0] < safeFrom) {
+          let cut = 0;
+          while (cut < out.t.length && out.t[cut] < safeFrom) cut++;
+          if (cut > 0) {
+            out.t = out.t.slice(cut);
+            out.o = out.o.slice(cut);
+            out.h = out.h.slice(cut);
+            out.l = out.l.slice(cut);
+            out.c = out.c.slice(cut);
+            out.v = out.v.slice(cut);
+          }
+        }
+
+        if (out.t.length === 0) return jsonResponse({ s: 'no_data' });
+        return jsonResponse({ s: 'ok', t: out.t, o: out.o, h: out.h, l: out.l, c: out.c, v: out.v });
       }
 
-      if (action === 'search') {
-        return jsonResponse([]);
-      }
+      if (action === 'search') return jsonResponse([]);
 
       return jsonResponse({ error: 'unknown action', action, pathname }, 404);
     } catch (err) {
