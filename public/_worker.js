@@ -1,20 +1,12 @@
 ﻿// public/_worker.js
-// Advanced Mode Pages Worker - handles /api/udf + serves static assets
+// Advanced Mode Pages Worker - UDF datafeed via Yahoo Finance
 
 function toYahooSymbol(udfSymbol) {
   if (!udfSymbol) return 'AAPL';
   const raw = udfSymbol.includes(':') ? udfSymbol.split(':')[1] : udfSymbol;
-
-  // Special case: USD/JPY is "JPY=X" on Yahoo (not "USDJPY=X")
   if (raw === 'USDJPY') return 'JPY=X';
-
-  // Other forex pairs: XXXYYY -> XXXYYY=X
-  // e.g. EURUSD -> EURUSD=X, GBPUSD -> GBPUSD=X, AUDJPY -> AUDJPY=X
   if (/^[A-Z]{6}$/.test(raw)) return raw + '=X';
-
-  // Crypto: BTCUSDT -> BTC-USD
   if (/USDT$/.test(raw)) return raw.replace('USDT', '') + '-USD';
-
   return raw;
 }
 
@@ -28,23 +20,27 @@ function toYahooInterval(resolution) {
 }
 
 async function fetchYahooChart(symbol, interval, from, to) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&period1=${from}&period2=${to}`;
+  // NOTE: do NOT encodeURIComponent - Yahoo wants literal '=' in path
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&period1=${from}&period2=${to}`;
   const res = await fetch(url, {
-    headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TradingView-Datafeed/1.0)' },
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (compatible; TradingView-Datafeed/1.0)',
+      'Accept': 'application/json',
+    },
   });
-  const data = await res.json().catch(() => null);
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = null; }
 
   if (!res.ok || !data) {
-    throw new Error(`Yahoo API ${res.status} for ${symbol} | url=${url}`);
+    throw new Error(`Yahoo ${res.status} for ${symbol} | body=${text.slice(0,150)}`);
   }
   if (data?.chart?.error) {
-    throw new Error(`Yahoo error: ${JSON.stringify(data.chart.error)} | url=${url}`);
+    throw new Error(`Yahoo error for ${symbol}: ${JSON.stringify(data.chart.error)}`);
   }
 
   const result = data?.chart?.result?.[0];
-  if (!result) {
-    throw new Error(`No chart result for ${symbol} | url=${url}`);
-  }
+  if (!result) throw new Error(`No chart result for ${symbol}`);
 
   const timestamps = result.timestamp || [];
   const quote = result.indicators?.quote?.[0] || {};
@@ -89,6 +85,7 @@ export default {
             supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'],
           });
         }
+
         if (action === 'symbols') {
           const symbol = url.searchParams.get('symbol') || 'FX_IDC:USDJPY';
           const raw = symbol.includes(':') ? symbol.split(':')[1] : symbol;
@@ -101,17 +98,33 @@ export default {
             supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'],
           });
         }
+
         if (action === 'history') {
           const symbol = url.searchParams.get('symbol') || 'FX_IDC:USDJPY';
           const resolution = url.searchParams.get('resolution') || '1';
-          const from = parseInt(url.searchParams.get('from') || '0', 10);
-          const to = parseInt(url.searchParams.get('to') || String(Math.floor(Date.now()/1000)), 10);
+          const fromReq = parseInt(url.searchParams.get('from') || '0', 10);
+          const toReq   = parseInt(url.searchParams.get('to') || '0', 10);
+
+          // Clamp the requested window to the WORKER'S real clock
+          const serverNow = Math.floor(Date.now() / 1000);
+          const windowSec = Math.max(60, (toReq || serverNow) - (fromReq || 0));
+          let safeTo   = Math.min(toReq || serverNow, serverNow);
+          let safeFrom = safeTo - windowSec;
+          if (safeFrom < 0) safeFrom = 0;
+
+          console.log(`[history] ${symbol} req=${fromReq}-${toReq} clamped=${safeFrom}-${safeTo}`);
+
           const { t, o, h, l, c, v } = await fetchYahooChart(
-            toYahooSymbol(symbol), toYahooInterval(resolution), from, to
+            toYahooSymbol(symbol),
+            toYahooInterval(resolution),
+            safeFrom,
+            safeTo
           );
+
           if (t.length === 0) return jsonResponse({ s: 'no_data' });
           return jsonResponse({ s: 'ok', t, o, h, l, c, v });
         }
+
         return jsonResponse({ error: 'unknown action', action }, 400);
       } catch (err) {
         return jsonResponse({ s: 'error', errmsg: String(err) }, 500);
