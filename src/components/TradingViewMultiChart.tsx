@@ -18,7 +18,6 @@ function SingleChart({ cfg, index }: { cfg: typeof CHARTS[number]; index: number
     let cancelled = false;
 
     (async () => {
-      // Wait for TV globals
       for (let i = 0; i < 100 && !cancelled; i++) {
         const w = window as any;
         if (w.TradingView && w.Datafeeds) break;
@@ -32,7 +31,6 @@ function SingleChart({ cfg, index }: { cfg: typeof CHARTS[number]; index: number
       if (!Datafeeds){ setErr('Datafeeds global missing'); return; }
       if (!containerRef.current) return;
 
-      // Each chart gets its own datafeed instance
       const datafeed = new Datafeeds.UDFCompatibleDatafeed(
         `${window.location.origin}/api/udf`,
         10000
@@ -52,7 +50,6 @@ function SingleChart({ cfg, index }: { cfg: typeof CHARTS[number]; index: number
           'header_saveload',
           'header_undo_redo',
         ],
-        enabled_features: [],
       });
 
       widgetRef.current.onChartReady(() => {
