@@ -51,6 +51,7 @@ export default function TradingViewMultiChart() {
           locale: 'en',
           datafeed,
           disabled_features: ['use_localstorage_for_settings'],
+          debug: true,
         });
 
         widgetRef.current.onChartReady(() => {
@@ -90,3 +91,4 @@ export default function TradingViewMultiChart() {
 
   return <div ref={containerRef} style={{ width: '100%', height: '100vh' }} />;
 }
+
