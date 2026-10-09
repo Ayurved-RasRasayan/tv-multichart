@@ -1,5 +1,5 @@
 ﻿// public/_worker.js
-// Advanced Mode Pages Worker - UDF datafeed via Yahoo Finance
+// UDF-compatible datafeed. Handles both path-based and query-based actions.
 
 function toYahooSymbol(udfSymbol) {
   if (!udfSymbol) return 'AAPL';
@@ -20,7 +20,6 @@ function toYahooInterval(resolution) {
 }
 
 async function fetchYahooChart(symbol, interval, from, to) {
-  // NOTE: do NOT encodeURIComponent - Yahoo wants literal '=' in path
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&period1=${from}&period2=${to}`;
   const res = await fetch(url, {
     headers: {
@@ -31,14 +30,8 @@ async function fetchYahooChart(symbol, interval, from, to) {
   const text = await res.text();
   let data;
   try { data = JSON.parse(text); } catch { data = null; }
-
-  if (!res.ok || !data) {
-    throw new Error(`Yahoo ${res.status} for ${symbol} | body=${text.slice(0,150)}`);
-  }
-  if (data?.chart?.error) {
-    throw new Error(`Yahoo error for ${symbol}: ${JSON.stringify(data.chart.error)}`);
-  }
-
+  if (!res.ok || !data) throw new Error(`Yahoo ${res.status} for ${symbol} | body=${text.slice(0,150)}`);
+  if (data?.chart?.error) throw new Error(`Yahoo error: ${JSON.stringify(data.chart.error)}`);
   const result = data?.chart?.result?.[0];
   if (!result) throw new Error(`No chart result for ${symbol}`);
 
@@ -46,7 +39,6 @@ async function fetchYahooChart(symbol, interval, from, to) {
   const quote = result.indicators?.quote?.[0] || {};
   const { open, high, low, close, volume } = quote;
   const t = [], o = [], h = [], l = [], c = [], v = [];
-
   for (let i = 0; i < timestamps.length; i++) {
     if (open[i] == null || close[i] == null) continue;
     t.push(timestamps[i]);
@@ -65,8 +57,21 @@ function jsonResponse(body, status = 200) {
     headers: {
       'Content-Type': 'application/json',
       'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+      'Access-Control-Allow-Headers': '*',
+      'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0',
+      'Pragma': 'no-cache',
     },
   });
+}
+
+function detectAction(url, pathname) {
+  const q = url.searchParams.get('action');
+  if (q) return q;
+  const m = pathname.match(/^\/api\/udf\/([a-z]+)$/i);
+  if (m) return m[1].toLowerCase();
+  if (pathname === '/api/udf' || pathname === '/api/udf/') return 'config';
+  return null;
 }
 
 export default {
@@ -74,63 +79,90 @@ export default {
     const url = new URL(request.url);
     const pathname = url.pathname;
 
-    if (pathname.startsWith('/api/udf')) {
-      const action = url.searchParams.get('action');
-      try {
-        if (action === 'config') {
-          return jsonResponse({
-            supports_search: true, supports_group_request: false,
-            supports_marks: false, supports_timescale_marks: false,
-            supports_time: true,
-            supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'],
-          });
-        }
-
-        if (action === 'symbols') {
-          const symbol = url.searchParams.get('symbol') || 'FX_IDC:USDJPY';
-          const raw = symbol.includes(':') ? symbol.split(':')[1] : symbol;
-          return jsonResponse({
-            name: raw, ticker: symbol, description: raw, type: 'forex',
-            session: '24x7', exchange: 'YAHOO', listed_exchange: 'YAHOO',
-            timezone: 'Etc/UTC', has_intraday: true, has_daily: true,
-            has_weekly_and_monthly: true, minmov: 1,
-            pricescale: raw.includes('JPY') ? 100 : 100000,
-            supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'],
-          });
-        }
-
-        if (action === 'history') {
-          const symbol = url.searchParams.get('symbol') || 'FX_IDC:USDJPY';
-          const resolution = url.searchParams.get('resolution') || '1';
-          const fromReq = parseInt(url.searchParams.get('from') || '0', 10);
-          const toReq   = parseInt(url.searchParams.get('to') || '0', 10);
-
-          // Clamp the requested window to the WORKER'S real clock
-          const serverNow = Math.floor(Date.now() / 1000);
-          const windowSec = Math.max(60, (toReq || serverNow) - (fromReq || 0));
-          let safeTo   = Math.min(toReq || serverNow, serverNow);
-          let safeFrom = safeTo - windowSec;
-          if (safeFrom < 0) safeFrom = 0;
-
-          console.log(`[history] ${symbol} req=${fromReq}-${toReq} clamped=${safeFrom}-${safeTo}`);
-
-          const { t, o, h, l, c, v } = await fetchYahooChart(
-            toYahooSymbol(symbol),
-            toYahooInterval(resolution),
-            safeFrom,
-            safeTo
-          );
-
-          if (t.length === 0) return jsonResponse({ s: 'no_data' });
-          return jsonResponse({ s: 'ok', t, o, h, l, c, v });
-        }
-
-        return jsonResponse({ error: 'unknown action', action }, 400);
-      } catch (err) {
-        return jsonResponse({ s: 'error', errmsg: String(err) }, 500);
-      }
+    if (request.method === 'OPTIONS') {
+      return new Response(null, {
+        status: 204,
+        headers: {
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+          'Access-Control-Allow-Headers': '*',
+        },
+      });
     }
 
-    return env.ASSETS.fetch(request);
+    if (!pathname.startsWith('/api/udf')) {
+      return env.ASSETS.fetch(request);
+    }
+
+    let bodyParams = {};
+    if (request.method === 'POST') {
+      try { bodyParams = await request.json(); } catch {}
+    }
+
+    const action = detectAction(url, pathname) || bodyParams.action;
+    console.log(`[UDF] pathname=${pathname} action=${action} method=${request.method}`);
+
+    try {
+      if (action === 'config') {
+        return jsonResponse({
+          exchanges: [],
+          supports_search: true,
+          supports_group_request: false,
+          supports_marks: false,
+          supports_timescale_marks: false,
+          supports_time: true,
+          symbols_types: [],
+          supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'],
+        });
+      }
+
+      if (action === 'symbols') {
+        const symbol = url.searchParams.get('symbol') || bodyParams.symbol || 'FX_IDC:USDJPY';
+        const raw = symbol.includes(':') ? symbol.split(':')[1] : symbol;
+        return jsonResponse({
+          name: raw,
+          ticker: symbol,
+          description: raw,
+          type: 'forex',
+          session: '24x7',
+          exchange: 'YAHOO',
+          listed_exchange: 'YAHOO',
+          timezone: 'Etc/UTC',
+          has_intraday: true,
+          has_daily: true,
+          has_weekly_and_monthly: true,
+          minmov: 1,
+          pricescale: raw.includes('JPY') ? 100 : 100000,
+          supported_resolutions: ['1','5','15','30','60','240','1D','1W','1M'],
+        });
+      }
+
+      if (action === 'history') {
+        const symbol = url.searchParams.get('symbol') || bodyParams.symbol || 'FX_IDC:USDJPY';
+        const resolution = url.searchParams.get('resolution') || bodyParams.resolution || '1';
+        const fromReq = parseInt(url.searchParams.get('from') || bodyParams.from || '0', 10);
+        const toReq   = parseInt(url.searchParams.get('to')   || bodyParams.to   || '0', 10);
+
+        const serverNow = Math.floor(Date.now() / 1000);
+        const windowSec = Math.max(60, (toReq || serverNow) - (fromReq || 0));
+        let safeTo   = Math.min(toReq || serverNow, serverNow);
+        let safeFrom = safeTo - windowSec;
+        if (safeFrom < 0) safeFrom = 0;
+
+        const { t, o, h, l, c, v } = await fetchYahooChart(
+          toYahooSymbol(symbol), toYahooInterval(resolution), safeFrom, safeTo
+        );
+        if (t.length === 0) return jsonResponse({ s: 'no_data' });
+        return jsonResponse({ s: 'ok', t, o, h, l, c, v });
+      }
+
+      if (action === 'search') {
+        return jsonResponse([]);
+      }
+
+      return jsonResponse({ error: 'unknown action', action, pathname }, 404);
+    } catch (err) {
+      return jsonResponse({ s: 'error', errmsg: String(err) }, 500);
+    }
   },
 };
