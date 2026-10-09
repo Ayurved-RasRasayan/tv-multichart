@@ -19,14 +19,18 @@ function toYahooInterval(resolution) {
 }
 
 async function fetchYahooChart(symbol, interval, from, to) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&period1=${Math.floor(from/1000)}&period2=${Math.floor(to/1000)}`;
+  // UDF sends unix SECONDS. Yahoo v8 also wants unix SECONDS.
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&period1=${from}&period2=${to}`;
   const res = await fetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TradingView-Datafeed/1.0)' },
   });
-  if (!res.ok) throw new Error(`Yahoo API error: ${res.status}`);
+  if (!res.ok) {
+    const errText = await res.text().catch(() => '');
+    throw new Error(`Yahoo API error: ${res.status} ${errText.slice(0, 200)}`);
+  }
   const data = await res.json();
   const result = data?.chart?.result?.[0];
-  if (!result) throw new Error('No chart result');
+  if (!result) throw new Error('No chart result from Yahoo');
   const timestamps = result.timestamp || [];
   const quote = result.indicators?.quote?.[0] || {};
   const { open, high, low, close, volume } = quote;
@@ -46,7 +50,10 @@ async function fetchYahooChart(symbol, interval, from, to) {
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' },
+    headers: {
+      'Content-Type': 'application/json',
+      'Access-Control-Allow-Origin': '*',
+    },
   });
 }
 
@@ -82,12 +89,14 @@ export default {
           const symbol = url.searchParams.get('symbol') || 'FX_IDC:USDJPY';
           const resolution = url.searchParams.get('resolution') || '1';
           const from = parseInt(url.searchParams.get('from') || '0', 10);
-          const to = parseInt(url.searchParams.get('to') || String(Date.now()), 10);
-          const { t, o, h, l, c, v } = await fetchYahooChart(toYahooSymbol(symbol), toYahooInterval(resolution), from, to);
+          const to = parseInt(url.searchParams.get('to') || String(Math.floor(Date.now()/1000)), 10);
+          const { t, o, h, l, c, v } = await fetchYahooChart(
+            toYahooSymbol(symbol), toYahooInterval(resolution), from, to
+          );
           if (t.length === 0) return jsonResponse({ s: 'no_data' });
           return jsonResponse({ s: 'ok', t, o, h, l, c, v });
         }
-        return jsonResponse({ error: 'unknown action' }, 400);
+        return jsonResponse({ error: 'unknown action', action }, 400);
       } catch (err) {
         return jsonResponse({ s: 'error', errmsg: String(err) }, 500);
       }
