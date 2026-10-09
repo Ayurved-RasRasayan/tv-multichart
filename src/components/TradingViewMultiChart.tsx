@@ -1,11 +1,13 @@
 ﻿'use client';
 import { useEffect, useRef, useState } from 'react';
 
+const SYMBOL = 'FX_IDC:USDJPY';
+
 const CHARTS = [
-  { symbol: 'FX_IDC:USDJPY', interval: '1',  study: 'Moving Average',           overlay: false, inputs: { length: 50 } },
-  { symbol: 'FX_IDC:EURUSD', interval: '5',  study: 'Bollinger Bands',          overlay: true,  inputs: { in_0: 20, in_1: 2 } },
-  { symbol: 'FX_IDC:GBPUSD', interval: '15', study: 'Relative Strength Index',  overlay: false, inputs: { in_0: 14 } },
-  { symbol: 'FX_IDC:AUDJPY', interval: '30', study: 'Volume',                   overlay: false, inputs: {} },
+  { interval: '1',  study: 'Moving Average',           overlay: false, inputs: { length: 50 } },
+  { interval: '3',  study: 'Bollinger Bands',          overlay: true,  inputs: { in_0: 20, in_1: 2 } },
+  { interval: '15', study: 'Relative Strength Index',  overlay: false, inputs: { in_0: 14 } },
+  { interval: '30', study: 'Volume',                   overlay: false, inputs: {} },
 ];
 
 function SingleChart({ cfg, index }: { cfg: typeof CHARTS[number]; index: number }) {
@@ -39,7 +41,7 @@ function SingleChart({ cfg, index }: { cfg: typeof CHARTS[number]; index: number
       widgetRef.current = new TV.widget({
         container: containerRef.current,
         library_path: '/charting_library/',
-        symbol: cfg.symbol,
+        symbol: SYMBOL,
         interval: cfg.interval,
         locale: 'en',
         datafeed,
@@ -82,7 +84,7 @@ function SingleChart({ cfg, index }: { cfg: typeof CHARTS[number]; index: number
         background: 'rgba(14,17,23,0.85)', padding: '3px 8px', borderRadius: 3,
         pointerEvents: 'none',
       }}>
-        {cfg.symbol}  {cfg.interval}m  {cfg.study} {ready ? '' : ''}
+        USDJPY  {cfg.interval}m  {cfg.study} {ready ? '' : ''}
       </div>
       {err && (
         <div style={{ padding: 16, color: '#ff6b6b', fontFamily: 'monospace', fontSize: 12 }}>
