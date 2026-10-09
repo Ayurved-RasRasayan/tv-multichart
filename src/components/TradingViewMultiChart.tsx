@@ -1,6 +1,13 @@
 ﻿'use client';
 import { useEffect, useRef, useState } from 'react';
 
+const SYMBOLS = [
+  { symbol: 'FX_IDC:USDJPY', interval: '1',  indicator: 'Moving Average',     overlay: false, inputs: { length: 50 } },
+  { symbol: 'BINANCE:BTCUSDT', interval: '3',  indicator: 'Bollinger Bands',   overlay: true,  inputs: { in_0: 20, in_1: 2 } },
+  { symbol: 'FX_IDC:EURUSD', interval: '15', indicator: 'Relative Strength Index', overlay: false, inputs: { in_0: 14 } },
+  { symbol: 'BINANCE:ETHUSDT', interval: '30', indicator: 'Volume',            overlay: false, inputs: {} },
+];
+
 export default function TradingViewMultiChart() {
   const containerRef = useRef<HTMLDivElement>(null);
   const widgetRef = useRef<any>(null);
@@ -27,16 +34,16 @@ export default function TradingViewMultiChart() {
 
         const TV = (window as any).TradingView;
         const Datafeeds = (window as any).Datafeeds;
-        if (!TV) { setError('TradingView global missing after charting_library.js'); return; }
-        if (!Datafeeds) { setError('Datafeeds global missing after bundle.js'); return; }
+        if (!TV) { setError('TradingView global missing'); return; }
+        if (!Datafeeds) { setError('Datafeeds global missing'); return; }
         if (!containerRef.current) return;
 
         widgetRef.current = new TV.widget({
           container: containerRef.current,
           library_path: '/charting_library/',
           layout: '4',
-          symbol: 'BINANCE:BTCUSDT',
-          interval: '1',
+          symbol: SYMBOLS[0].symbol,
+          interval: SYMBOLS[0].interval,
           locale: 'en',
           datafeed: new Datafeeds.UDFCompatibleDatafeed('https://demo-feed-data.tradingview.com'),
           disabled_features: ['use_localstorage_for_settings'],
@@ -44,15 +51,29 @@ export default function TradingViewMultiChart() {
 
         widgetRef.current.onChartReady(() => {
           try {
-            const c1 = widgetRef.current.chart(0);
-            const c2 = widgetRef.current.chart(1);
-            const c3 = widgetRef.current.chart(2);
-            const c4 = widgetRef.current.chart(3);
-            c1.setResolution('1');  c1.createStudy('Moving Average', false, false, { length: 50 });
-            c2.setResolution('3');  c2.createStudy('Bollinger Bands', true, false, { in_0: 20, in_1: 2 });
-            c3.setResolution('15'); c3.createStudy('Relative Strength Index', false, false, { in_0: 14 });
-            c4.setResolution('30'); c4.createStudy('Volume', false, false);
-          } catch (e: any) { console.error('Indicator setup failed:', e); }
+            // Configure each chart pane
+            SYMBOLS.forEach((cfg, i) => {
+              const chart = widgetRef.current.chart(i);
+              if (!chart) return;
+
+              // Set symbol (all except first, since first is set at widget init)
+              if (i > 0) chart.setSymbol(cfg.symbol, () => {});
+              chart.setResolution(cfg.interval);
+
+              // Add indicator
+              if (cfg.indicator === 'Volume') {
+                chart.createStudy('Volume', false, false);
+              } else if (cfg.indicator === 'Moving Average') {
+                chart.createStudy('Moving Average', cfg.overlay, false, cfg.inputs);
+              } else if (cfg.indicator === 'Bollinger Bands') {
+                chart.createStudy('Bollinger Bands', cfg.overlay, false, cfg.inputs);
+              } else if (cfg.indicator === 'Relative Strength Index') {
+                chart.createStudy('Relative Strength Index', cfg.overlay, false, cfg.inputs);
+              }
+            });
+          } catch (e: any) {
+            console.error('Indicator setup failed:', e);
+          }
         });
       } catch (e: any) {
         if (!cancelled) setError(e.message || String(e));
@@ -67,7 +88,7 @@ export default function TradingViewMultiChart() {
 
   if (error) {
     return (
-      <div style={{ padding: 24, color: '#ff6b6b', background: '#0e1117', fontFamily: 'monospace', minHeight: '100vh', boxSizing: 'border-box' }}>
+      <div style={{ padding: 24, color: '#ff6b6b', background: '#0e1117', fontFamily: 'monospace', minHeight: '100vh' }}>
         <h2>Chart load error</h2>
         <pre style={{ whiteSpace: 'pre-wrap', color: '#d1d4dc' }}>{error}</pre>
       </div>
