@@ -2,10 +2,10 @@
 import { useEffect, useRef, useState } from 'react';
 
 const SYMBOLS = [
-  { symbol: 'FX_IDC:USDJPY', interval: '1',  indicator: 'Moving Average',     overlay: false, inputs: { length: 50 } },
-  { symbol: 'BINANCE:BTCUSDT', interval: '3',  indicator: 'Bollinger Bands',   overlay: true,  inputs: { in_0: 20, in_1: 2 } },
-  { symbol: 'FX_IDC:EURUSD', interval: '15', indicator: 'Relative Strength Index', overlay: false, inputs: { in_0: 14 } },
-  { symbol: 'BINANCE:ETHUSDT', interval: '30', indicator: 'Volume',            overlay: false, inputs: {} },
+  { symbol: 'FX_IDC:USDJPY', interval: '1',  study: 'Moving Average',          overlay: false, inputs: { length: 50 } },
+  { symbol: 'FX_IDC:EURUSD', interval: '5',  study: 'Bollinger Bands',         overlay: true,  inputs: { in_0: 20, in_1: 2 } },
+  { symbol: 'FX_IDC:GBPUSD', interval: '15', study: 'Relative Strength Index', overlay: false, inputs: { in_0: 14 } },
+  { symbol: 'FX_IDC:AUDJPY', interval: '30', study: 'Volume',                  overlay: false, inputs: {} },
 ];
 
 export default function TradingViewMultiChart() {
@@ -38,6 +38,10 @@ export default function TradingViewMultiChart() {
         if (!Datafeeds) { setError('Datafeeds global missing'); return; }
         if (!containerRef.current) return;
 
+        const datafeed = new Datafeeds.UDFCompatibleDatafeed(
+          `${window.location.origin}/api/udf`
+        );
+
         widgetRef.current = new TV.widget({
           container: containerRef.current,
           library_path: '/charting_library/',
@@ -45,35 +49,24 @@ export default function TradingViewMultiChart() {
           symbol: SYMBOLS[0].symbol,
           interval: SYMBOLS[0].interval,
           locale: 'en',
-          datafeed: new Datafeeds.UDFCompatibleDatafeed('https://demo-feed-data.tradingview.com'),
+          datafeed,
           disabled_features: ['use_localstorage_for_settings'],
         });
 
         widgetRef.current.onChartReady(() => {
           try {
-            // Configure each chart pane
             SYMBOLS.forEach((cfg, i) => {
               const chart = widgetRef.current.chart(i);
               if (!chart) return;
-
-              // Set symbol (all except first, since first is set at widget init)
               if (i > 0) chart.setSymbol(cfg.symbol, () => {});
               chart.setResolution(cfg.interval);
-
-              // Add indicator
-              if (cfg.indicator === 'Volume') {
+              if (cfg.study === 'Volume') {
                 chart.createStudy('Volume', false, false);
-              } else if (cfg.indicator === 'Moving Average') {
-                chart.createStudy('Moving Average', cfg.overlay, false, cfg.inputs);
-              } else if (cfg.indicator === 'Bollinger Bands') {
-                chart.createStudy('Bollinger Bands', cfg.overlay, false, cfg.inputs);
-              } else if (cfg.indicator === 'Relative Strength Index') {
-                chart.createStudy('Relative Strength Index', cfg.overlay, false, cfg.inputs);
+              } else {
+                chart.createStudy(cfg.study, cfg.overlay, false, cfg.inputs);
               }
             });
-          } catch (e: any) {
-            console.error('Indicator setup failed:', e);
-          }
+          } catch (e) { console.error('study setup failed', e); }
         });
       } catch (e: any) {
         if (!cancelled) setError(e.message || String(e));
