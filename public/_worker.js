@@ -4,8 +4,17 @@
 function toYahooSymbol(udfSymbol) {
   if (!udfSymbol) return 'AAPL';
   const raw = udfSymbol.includes(':') ? udfSymbol.split(':')[1] : udfSymbol;
+
+  // Special case: USD/JPY is "JPY=X" on Yahoo (not "USDJPY=X")
+  if (raw === 'USDJPY') return 'JPY=X';
+
+  // Other forex pairs: XXXYYY -> XXXYYY=X
+  // e.g. EURUSD -> EURUSD=X, GBPUSD -> GBPUSD=X, AUDJPY -> AUDJPY=X
   if (/^[A-Z]{6}$/.test(raw)) return raw + '=X';
+
+  // Crypto: BTCUSDT -> BTC-USD
   if (/USDT$/.test(raw)) return raw.replace('USDT', '') + '-USD';
+
   return raw;
 }
 
@@ -19,22 +28,29 @@ function toYahooInterval(resolution) {
 }
 
 async function fetchYahooChart(symbol, interval, from, to) {
-  // UDF sends unix SECONDS. Yahoo v8 also wants unix SECONDS.
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}?interval=${interval}&period1=${from}&period2=${to}`;
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${encodeURIComponent(symbol)}?interval=${interval}&period1=${from}&period2=${to}`;
   const res = await fetch(url, {
     headers: { 'User-Agent': 'Mozilla/5.0 (compatible; TradingView-Datafeed/1.0)' },
   });
-  if (!res.ok) {
-    const errText = await res.text().catch(() => '');
-    throw new Error(`Yahoo API error: ${res.status} ${errText.slice(0, 200)}`);
+  const data = await res.json().catch(() => null);
+
+  if (!res.ok || !data) {
+    throw new Error(`Yahoo API ${res.status} for ${symbol} | url=${url}`);
   }
-  const data = await res.json();
+  if (data?.chart?.error) {
+    throw new Error(`Yahoo error: ${JSON.stringify(data.chart.error)} | url=${url}`);
+  }
+
   const result = data?.chart?.result?.[0];
-  if (!result) throw new Error('No chart result from Yahoo');
+  if (!result) {
+    throw new Error(`No chart result for ${symbol} | url=${url}`);
+  }
+
   const timestamps = result.timestamp || [];
   const quote = result.indicators?.quote?.[0] || {};
   const { open, high, low, close, volume } = quote;
   const t = [], o = [], h = [], l = [], c = [], v = [];
+
   for (let i = 0; i < timestamps.length; i++) {
     if (open[i] == null || close[i] == null) continue;
     t.push(timestamps[i]);
